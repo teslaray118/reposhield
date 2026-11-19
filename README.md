@@ -66,7 +66,7 @@ Run the watcher, then edit `pipes.py` to rename or remove a function to see Repo
 
 ## 👤 Author
 
-Built by **Tesla Ray** — 16-year-old student from Kenya.  
+Built by **Ray Koech** — 16-year-old student from Kenya.  
 Passionate about software reliability, developer tooling, and AI safety.
 
 ## 📄 License
