@@ -40,3 +40,36 @@ python reposhield.py watch .
 ```
 Runs in the background while you paste AI-generated code into your editor. If an edit breaks downstream code, it immediately flags the impacted files and prints a ready-to-copy remediation prompt for your AI.
 
+---
+
+## 🧪 Try the Included Demo
+
+This repo includes a minimal water distribution demo:
+- `pipes.py`: Exposes water delivery functions.
+- `village.py`: Consumes `supply_water()`.
+- `school.py`: Consumes `deliver_water()`.
+
+Run the watcher, then edit `pipes.py` to rename or remove a function to see RepoShield detect the breakage in real time.
+
+---
+
+## 🗺️ Roadmap
+
+- [x] Python AST cross-file import analysis
+- [x] Syntax error detection with downstream impact warnings
+- [x] Automated AI remediation prompt generation
+- [ ] Function signature & parameter mismatch detection
+- [ ] GitHub Actions CI workflow integration
+- [ ] Multi-language support (JavaScript/TypeScript)
+
+---
+
+## 👤 Author
+
+Built by **Tesla Ray** — 16-year-old student from Kenya.  
+Passionate about software reliability, developer tooling, and AI safety.
+
+## 📄 License
+
+MIT
+
