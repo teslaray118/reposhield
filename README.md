@@ -18,6 +18,7 @@ It rewrites that single file cleanly, but it has no map of the codebase. A funct
 1. **Dependency Mapping**: Automatically indexes every function, class, and cross-file import.
 2. **Contract Enforcement**: Detects when an edit removes or breaks a symbol needed by downstream files.
 3. **Automated AI Remediation**: Generates precise, copy-pasteable prompts to force the AI model to fix its regressions while preserving backward compatibility.
+![RepoShield Live Sentinel](demo.png)
 
 ---
 
