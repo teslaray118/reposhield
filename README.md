@@ -29,3 +29,14 @@ RepoShield uses only Python's standard library—no heavy dependencies, no compl
 ### 1. Scan your project blueprint
 ```bash
 python reposhield.py scan .
+```
+Indexes every function definition and maps how files depend on each other.
+```bash
+python reposhield.py check .
+```
+Validates all import contracts. Exits with code 0 on success or code 1 with regression details for CI pipelines.
+```bash
+python reposhield.py watch .
+```
+Runs in the background while you paste AI-generated code into your editor. If an edit breaks downstream code, it immediately flags the impacted files and prints a ready-to-copy remediation prompt for your AI.
+
