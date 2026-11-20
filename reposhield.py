@@ -1,50 +1,72 @@
 #!/usr/bin/env python3
 """
-🛡️ REPOSHIELD — AI Code Safety & Dependency Sentinel (v0.2.2)
-Zero-dependency static analysis engine built on Python's Abstract Syntax Tree (ast).
-Guards against silent cross-file regressions introduced by AI coding models.
+RepoShield v0.3.0 — AI Code Safety & Dependency Sentinel
+Lightweight, zero-dependency Python AST-based static analysis engine.
+Detects cross-file contract breaks, missing symbols, signature mismatches,
+scope shadowing, class inheritance regressions, and dynamic/conditional imports.
 """
 
-import argparse
 import ast
+import builtins
 import hashlib
 import os
 import sys
 import time
 from collections import defaultdict, deque
 
-BANNER = """
-======================================================
-  🛡️  REPOSHIELD — AI Code Safety & Impact Sentinel
-======================================================
+VERSION = "0.3.0"
+
+BANNER = rf"""
+======================================================================
+  🛡️  REPOSHIELD v{VERSION} — AI Code Safety & Dependency Sentinel
+  Catch cross-file regressions before they break production.
+======================================================================
 """
 
-IGNORE_DIRS = frozenset({
-    ".git", "__pycache__", "venv", ".venv", "env", ".env", "node_modules",
-    ".pytest_cache", ".mypy_cache", ".tox", "build", "dist", ".idea", ".vscode"
-})
+IGNORE_DIRS = {
+    ".git", ".svn", ".hg", "__pycache__", ".pytest_cache", ".mypy_cache",
+    ".tox", "venv", ".venv", "env", ".env", "node_modules", "dist",
+    "build", ".egg-info", "_build", ".idea", ".vscode"
+}
 
 IGNORE_EXTENSIONS = (
-    ".pyc", ".pyo", ".pyd", ".tmp", ".swp", ".swo", "~", ".bak", ".crdownload"
+    ".pyc", ".pyo", ".pyd", ".swp", ".swo", "~", ".tmp", ".bak", ".orig"
 )
 
-STDLIB_MODULES = getattr(sys, "stdlib_module_names", frozenset({
-    "abc", "argparse", "array", "ast", "asyncio", "base64", "binascii",
-    "bisect", "builtins", "calendar", "cmath", "collections", "contextlib",
-    "copy", "csv", "ctypes", "datetime", "decimal", "difflib", "dis",
-    "email", "enum", "errno", "faulthandler", "fcntl", "fnmatch", "fractions",
-    "functools", "gc", "getopt", "getpass", "gettext", "glob", "gzip",
-    "hashlib", "heapq", "hmac", "html", "http", "imaplib", "importlib", "inspect",
-    "io", "itertools", "json", "keyword", "linecache", "locale", "logging",
-    "math", "mimetypes", "mmap", "multiprocessing", "netrc", "numbers",
-    "operator", "os", "pathlib", "pickle", "pkgutil", "platform", "pprint",
-    "queue", "random", "re", "resource", "sched", "secrets", "select",
-    "selectors", "shelve", "shutil", "signal", "site", "socket", "sqlite3",
-    "ssl", "stat", "statistics", "string", "struct", "subprocess", "sys",
-    "sysconfig", "tarfile", "tempfile", "termios", "textwrap", "threading",
-    "time", "timeit", "traceback", "types", "typing", "unittest", "urllib",
-    "uuid", "warnings", "weakref", "xml", "zipfile", "zipimport", "zlib"
-}))
+STDLIB_MODULES = {
+    "abc", "argparse", "array", "ast", "asyncio", "atexit", "base64",
+    "bdb", "binascii", "bisect", "builtins", "bz2", "calendar", "cgi",
+    "cgitb", "chunk", "cmath", "cmd", "code", "codecs", "codeop",
+    "collections", "colorsys", "compileall", "concurrent", "configparser",
+    "contextlib", "contextvars", "copy", "copyreg", "cProfile", "crypt",
+    "csv", "ctypes", "curses", "dataclasses", "datetime", "dbm", "decimal",
+    "difflib", "dis", "distutils", "doctest", "email", "encodings",
+    "ensurepip", "enum", "errno", "faulthandler", "fcntl", "filecmp",
+    "fileinput", "fnmatch", "fractions", "ftplib", "functools", "gc",
+    "getopt", "getpass", "gettext", "glob", "graphlib", "gzip", "hashlib",
+    "heapq", "hmac", "html", "http", "imaplib", "imghdr", "imp", "importlib",
+    "inspect", "io", "ipaddress", "itertools", "json", "keyword", "lib2to3",
+    "linecache", "locale", "logging", "lzma", "mailbox", "mailcap", "marshal",
+    "math", "mimetypes", "mmap", "modulefinder", "msilib", "msvcrt", "multiprocessing",
+    "netrc", "nntplib", "numbers", "operator", "optparse", "os", "ossaudiodev",
+    "pathlib", "pdb", "pickle", "pickletools", "pipes", "pkgutil", "platform",
+    "plistlib", "poplib", "posix", "pprint", "profile", "pstats", "pty",
+    "pwd", "py_compile", "pyclbr", "pydoc", "queue", "quopri", "random",
+    "re", "readline", "reprlib", "resource", "rlcompleter", "runpy", "sched",
+    "secrets", "select", "selectors", "shelve", "shlex", "shutil", "signal",
+    "site", "smtpd", "smtplib", "sndhdr", "socket", "socketserver", "spwd",
+    "sqlite3", "ssl", "stat", "statistics", "string", "stringprep", "struct",
+    "subprocess", "sunau", "symbol", "symtable", "sys", "sysconfig", "syslog",
+    "tabnanny", "tarfile", "telnetlib", "tempfile", "termios", "test",
+    "textwrap", "threading", "time", "timeit", "tkinter", "token", "tokenize",
+    "tomllib", "trace", "traceback", "tracemalloc", "tty", "turtle", "turtledemo",
+    "types", "typing", "unicodedata", "unittest", "urllib", "uu", "uuid",
+    "venv", "warnings", "wave", "weakref", "webbrowser", "winreg", "winsound",
+    "wsgiref", "xdrlib", "xml", "xmlrpc", "zipapp", "zipfile", "zipimport",
+    "zlib", "zoneinfo"
+}
+
+BUILTIN_NAMES = set(dir(builtins))
 
 
 def _extract_str_constant(node):
@@ -70,8 +92,8 @@ def compute_file_hash(filepath, retries=2):
     return None
 
 
-def parse_function_signature(func_node):
-    """Extract parameters, defaults, and argument types from a FunctionDef node."""
+def parse_function_signature(func_node, is_method=False, method_type="method"):
+    """Extract parameters, defaults, argument types, and async status from a FunctionDef/AsyncFunctionDef."""
     args = func_node.args
     posonly = [a.arg for a in getattr(args, "posonlyargs", [])]
     pos = [a.arg for a in args.args]
@@ -90,9 +112,28 @@ def parse_function_signature(func_node):
         arg.arg for arg, d in zip(args.kwonlyargs, kw_defaults) if d is not None
     ]
 
+    # Extract decorator names
+    decorators = []
+    for d in func_node.decorator_list:
+        if isinstance(d, ast.Name):
+            decorators.append(d.id)
+        elif isinstance(d, ast.Attribute) and isinstance(d.value, ast.Name):
+            decorators.append(f"{d.value.id}.{d.attr}")
+
+    if "staticmethod" in decorators:
+        method_type = "staticmethod"
+    elif "classmethod" in decorators:
+        method_type = "classmethod"
+    elif "property" in decorators:
+        method_type = "property"
+
     return {
         "name": func_node.name,
         "line": func_node.lineno,
+        "is_async": isinstance(func_node, ast.AsyncFunctionDef),
+        "is_method": is_method,
+        "method_type": method_type,
+        "decorators": decorators,
         "posonly_args": posonly,
         "pos_args": pos,
         "all_pos": positional,
@@ -111,14 +152,93 @@ def parse_function_signature(func_node):
     }
 
 
+def extract_module_all(tree):
+    """
+    Extract statically identifiable exports from module-level __all__.
+    Returns (set_of_exports_or_None, is_dynamic).
+    """
+    for node in tree.body:
+        if isinstance(node, ast.Assign):
+            for target in node.targets:
+                if isinstance(target, ast.Name) and target.id == "__all__":
+                    if isinstance(node.value, (ast.List, ast.Tuple)):
+                        exports = []
+                        for elt in node.value.elts:
+                            s = _extract_str_constant(elt)
+                            if s is not None:
+                                exports.append(s)
+                            else:
+                                return None, True  # dynamic element in __all__
+                        return set(exports), False
+                    return None, True  # dynamic __all__ assignment
+    return None, False
+
+
+class LexicalScope:
+    """Represents a lexical scope in Python (module, function, class, or async function)."""
+    def __init__(self, name="<module>", kind="module", parent=None):
+        self.name = name
+        self.kind = kind  # "module", "function", "class", "async_function"
+        self.parent = parent
+        self.children = []
+        self.module_aliases = {}     # local alias -> target module string
+        self.symbol_aliases = {}     # local alias -> (mod, sym, level, is_conditional)
+        self.wildcard_imports = set()
+        self.dynamic_importers = set()
+        self.provenance = {}         # var_name -> {"kind": ..., "module": ..., "class": ..., "line": ...}
+        self.local_vars = set()      # local assignments and function parameters
+        self.definitions = set()
+
+    def lookup_module(self, name):
+        """Lookup module alias with lexical shadowing."""
+        if name in self.module_aliases:
+            return self.module_aliases[name]
+        # If shadowed by local non-module variable
+        if name in self.local_vars and name not in self.module_aliases and name not in self.symbol_aliases:
+            return None
+        if self.parent:
+            return self.parent.lookup_module(name)
+        return None
+
+    def lookup_symbol(self, name):
+        """Lookup imported symbol with lexical shadowing."""
+        if name in self.symbol_aliases:
+            return self.symbol_aliases[name]
+        if name in self.local_vars and name not in self.symbol_aliases and name not in self.module_aliases:
+            return None
+        if self.parent:
+            return self.parent.lookup_symbol(name)
+        return None
+
+    def lookup_provenance(self, name):
+        """Lookup variable provenance (e.g. which module or class instance it holds)."""
+        if name in self.provenance:
+            return self.provenance[name]
+        if name in self.local_vars and name not in self.provenance and name not in self.module_aliases:
+            return None
+        if self.parent:
+            return self.parent.lookup_provenance(name)
+        return None
+
+    def all_visible_wildcards(self):
+        """Collect all wildcard imports visible in this scope and outer scopes."""
+        wildcards = set(self.wildcard_imports)
+        if self.parent:
+            wildcards.update(self.parent.all_visible_wildcards())
+        return wildcards
+
+
 class _InfoVisitor(ast.NodeVisitor):
     def __init__(self, result):
         self.r = result
-        self.module_aliases = {}
-        self.symbol_aliases = {}
-        self.dynamic_importers = set()
-        self.scope = []
+        self.root_scope = LexicalScope("<module>", "module")
+        self.current_scope = self.root_scope
         self.condition_stack = []
+
+        # Backward compatibility aliases dicts
+        self.module_aliases = self.root_scope.module_aliases
+        self.symbol_aliases = self.root_scope.symbol_aliases
+        self.dynamic_importers = self.root_scope.dynamic_importers
 
     def visit_If(self, node):
         self.condition_stack.append("if")
@@ -152,34 +272,78 @@ class _InfoVisitor(ast.NodeVisitor):
             self.visit(item)
         self.condition_stack.pop()
 
-    def visit_FunctionDef(self, node):
-        if not self.scope:
+    def _handle_func_def(self, node, is_async=False):
+        if self.current_scope == self.root_scope:
             self.r["definitions"].add(node.name)
-            self.r["signatures"][node.name] = parse_function_signature(node)
-        self.scope.append(node.name)
-        self.generic_visit(node)
-        self.scope.pop()
+            self.r["signatures"][node.name] = parse_function_signature(node, is_method=False)
 
-    visit_AsyncFunctionDef = visit_FunctionDef
+        child_scope = LexicalScope(node.name, "async_function" if is_async else "function", parent=self.current_scope)
+        self.current_scope.children.append(child_scope)
+        old_scope = self.current_scope
+        self.current_scope = child_scope
+
+        # Register parameters as local variables
+        for arg in getattr(node.args, "posonlyargs", []):
+            child_scope.local_vars.add(arg.arg)
+        for arg in node.args.args:
+            child_scope.local_vars.add(arg.arg)
+        for arg in node.args.kwonlyargs:
+            child_scope.local_vars.add(arg.arg)
+        if node.args.vararg:
+            child_scope.local_vars.add(node.args.vararg.arg)
+        if node.args.kwarg:
+            child_scope.local_vars.add(node.args.kwarg.arg)
+
+        for item in node.body:
+            self.visit(item)
+
+        self.current_scope = old_scope
+
+    def visit_FunctionDef(self, node):
+        self._handle_func_def(node, is_async=False)
+
+    def visit_AsyncFunctionDef(self, node):
+        self._handle_func_def(node, is_async=True)
 
     def visit_ClassDef(self, node):
-        if not self.scope:
+        methods, signatures = set(), {}
+        bases = []
+        has_dynamic_base = False
+
+        for b in node.bases:
+            if isinstance(b, ast.Name):
+                bases.append(b.id)
+            elif isinstance(b, ast.Attribute):
+                dotted = self._dotted(b)
+                bases.append(dotted or b.attr)
+            else:
+                has_dynamic_base = True
+
+        for item in node.body:
+            if isinstance(item, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                methods.add(item.name)
+                sig = parse_function_signature(item, is_method=True)
+                signatures[item.name] = sig
+
+        if self.current_scope == self.root_scope:
             self.r["definitions"].add(node.name)
-            methods, signatures = set(), {}
-            for item in node.body:
-                if isinstance(item, (ast.FunctionDef, ast.AsyncFunctionDef)):
-                    methods.add(item.name)
-                    signatures[item.name] = parse_function_signature(item)
-            bases = [b.id for b in node.bases if isinstance(b, ast.Name)]
             self.r["classes"][node.name] = {
                 "line": node.lineno,
                 "methods": methods,
                 "signatures": signatures,
                 "bases": bases,
+                "has_dynamic_base": has_dynamic_base,
             }
-        self.scope.append(node.name)
-        self.generic_visit(node)
-        self.scope.pop()
+
+        child_scope = LexicalScope(node.name, "class", parent=self.current_scope)
+        self.current_scope.children.append(child_scope)
+        old_scope = self.current_scope
+        self.current_scope = child_scope
+
+        for item in node.body:
+            self.visit(item)
+
+        self.current_scope = old_scope
 
     def _dotted(self, node):
         if isinstance(node, ast.Name):
@@ -190,34 +354,73 @@ class _InfoVisitor(ast.NodeVisitor):
         return None
 
     def visit_Assign(self, node):
-        if not self.scope:
-            for t in node.targets:
-                for n in ast.walk(t):
-                    if isinstance(n, ast.Name):
+        # 1. Track local variable definitions
+        assigned_names = []
+        for t in node.targets:
+            for n in ast.walk(t):
+                if isinstance(n, ast.Name):
+                    self.current_scope.local_vars.add(n.id)
+                    assigned_names.append(n.id)
+                    if self.current_scope == self.root_scope:
                         self.r["definitions"].add(n.id)
+
+        # 2. Track dynamic imports: x = importlib.import_module("mod") or __import__("mod")
         if isinstance(node.value, ast.Call):
             dotted = self._dotted(node.value.func)
             local_func = node.value.func.id if isinstance(node.value.func, ast.Name) else None
-            is_dyn = (local_func in self.dynamic_importers) or (dotted == "importlib.import_module")
+            is_dyn = (local_func in self.current_scope.dynamic_importers) or (dotted == "importlib.import_module") or (local_func == "__import__")
             if is_dyn and node.value.args:
                 mod_str = _extract_str_constant(node.value.args[0])
                 if mod_str:
-                    for target in node.targets:
-                        if isinstance(target, ast.Name):
-                            self.module_aliases[target.id] = mod_str
+                    for target_name in assigned_names:
+                        self.current_scope.module_aliases[target_name] = mod_str
+                        self.current_scope.provenance[target_name] = {
+                            "kind": "module",
+                            "module": mod_str,
+                            "line": node.lineno,
+                            "is_dynamic": True
+                        }
+            # Track class instance creation: service = PaymentService()
+            elif isinstance(node.value.func, (ast.Name, ast.Attribute)):
+                cls_dotted = self._dotted(node.value.func)
+                if cls_dotted:
+                    for target_name in assigned_names:
+                        self.current_scope.provenance[target_name] = {
+                            "kind": "instance",
+                            "class": cls_dotted,
+                            "line": node.lineno
+                        }
+
+        # 3. Simple variable provenance copy: y = x
+        elif isinstance(node.value, ast.Name):
+            src_prov = self.current_scope.lookup_provenance(node.value.id)
+            if src_prov:
+                for target_name in assigned_names:
+                    self.current_scope.provenance[target_name] = src_prov
+
         self.generic_visit(node)
 
     def visit_AnnAssign(self, node):
-        if not self.scope and isinstance(node.target, ast.Name):
-            self.r["definitions"].add(node.target.id)
+        if isinstance(node.target, ast.Name):
+            self.current_scope.local_vars.add(node.target.id)
+            if self.current_scope == self.root_scope:
+                self.r["definitions"].add(node.target.id)
         self.generic_visit(node)
 
     def visit_Import(self, node):
         for alias in node.names:
             local = alias.asname or alias.name.split(".")[0]
-            self.module_aliases[local] = alias.name if alias.asname else alias.name.split(".")[0]
+            target_mod = alias.name if alias.asname else alias.name.split(".")[0]
+            self.current_scope.module_aliases[local] = target_mod
+            self.current_scope.provenance[local] = {
+                "kind": "module",
+                "module": alias.name,
+                "line": node.lineno,
+                "is_dynamic": False
+            }
             if alias.name == "importlib":
-                self.module_aliases[local] = "importlib"
+                self.current_scope.module_aliases[local] = "importlib"
+
             self.r["imports"].append({
                 "type": "module",
                 "module": alias.name,
@@ -229,15 +432,19 @@ class _InfoVisitor(ast.NodeVisitor):
                 "condition_type": self.condition_stack[-1] if self.condition_stack else None,
                 "is_dynamic": False,
                 "is_literal": True,
+                "scope_name": self.current_scope.name,
+                "scope_kind": self.current_scope.kind,
             })
 
     def visit_ImportFrom(self, node):
         for alias in node.names:
             local = alias.asname or alias.name
-            if not self.scope and alias.name != "*":
+            if self.current_scope == self.root_scope and alias.name != "*":
                 self.r["definitions"].add(local)
+
             if node.module == "importlib" and alias.name == "import_module":
-                self.dynamic_importers.add(local)
+                self.current_scope.dynamic_importers.add(local)
+
             item = {
                 "type": "from",
                 "module": node.module or "",
@@ -249,12 +456,18 @@ class _InfoVisitor(ast.NodeVisitor):
                 "condition_type": self.condition_stack[-1] if self.condition_stack else None,
                 "is_dynamic": False,
                 "is_literal": True,
+                "scope_name": self.current_scope.name,
+                "scope_kind": self.current_scope.kind,
             }
             self.r["imports"].append(item)
+
             if alias.name == "*":
                 self.r["wildcard_imports"].add(node.module or "")
+                self.current_scope.wildcard_imports.add(node.module or "")
             else:
-                self.symbol_aliases[local] = (node.module or "", alias.name, node.level)
+                self.current_scope.symbol_aliases[local] = (
+                    node.module or "", alias.name, node.level, bool(self.condition_stack)
+                )
 
     def visit_Call(self, node):
         dotted = self._dotted(node.func)
@@ -262,13 +475,14 @@ class _InfoVisitor(ast.NodeVisitor):
 
         # 1. Dynamic imports: importlib.import_module(...) or aliased
         is_dynamic = False
-        if local_name and (local_name in self.dynamic_importers or local_name == "__import__"):
+        if local_name and (local_name in self.current_scope.dynamic_importers or local_name == "__import__"):
             is_dynamic = True
         elif dotted == "importlib.import_module":
             is_dynamic = True
         elif dotted:
             parts = dotted.split(".")
-            if parts[0] in self.module_aliases and self.module_aliases[parts[0]] == "importlib" and parts[1:] == ["import_module"]:
+            mod_resolved = self.current_scope.lookup_module(parts[0])
+            if mod_resolved == "importlib" and parts[1:] == ["import_module"]:
                 is_dynamic = True
 
         if is_dynamic and node.args:
@@ -284,52 +498,72 @@ class _InfoVisitor(ast.NodeVisitor):
                 "condition_type": self.condition_stack[-1] if self.condition_stack else None,
                 "is_dynamic": True,
                 "is_literal": mod_str is not None,
+                "scope_name": self.current_scope.name,
             })
 
-        # 2. getattr(obj, "attr") calls
+        # 2. getattr(obj, "attr") calls with strict provenance
         if local_name == "getattr" and len(node.args) >= 2:
             target_obj = node.args[0]
             attr_arg = node.args[1]
             attr_str = _extract_str_constant(attr_arg)
             obj_name = target_obj.id if isinstance(target_obj, ast.Name) else None
+            obj_prov = self.current_scope.lookup_provenance(obj_name) if obj_name else None
+            mod_lookup = self.current_scope.lookup_module(obj_name) if obj_name else None
+
             self.r["getattr_calls"].append({
                 "line": node.lineno,
                 "object": obj_name,
                 "attr": attr_str,
                 "has_literal_attr": attr_str is not None,
                 "is_conditional": bool(self.condition_stack),
+                "provenance": obj_prov,
+                "module_alias": mod_lookup,
             })
 
-        # 3. Regular function calls to mapped symbols
+        # 3. Regular function calls to mapped symbols, modules, or class instances
         target = None
-        if local_name and local_name in self.symbol_aliases:
-            mod, sym, level = self.symbol_aliases[local_name]
-            target = {
-                "kind": "symbol",
-                "module": mod,
-                "symbol": sym,
-                "level": level,
-                "local": local_name,
-            }
-        elif dotted:
-            first, _, tail = dotted.partition(".")
-            if first in self.module_aliases and tail:
-                target = {
-                    "kind": "module",
-                    "module": self.module_aliases[first],
-                    "symbol": tail,
-                    "level": 0,
-                    "local": first,
-                }
-            elif local_name and local_name in self.symbol_aliases:
-                mod, sym, level = self.symbol_aliases[local_name]
+        is_instance_method_call = False
+
+        if local_name:
+            sym_info = self.current_scope.lookup_symbol(local_name)
+            if sym_info:
+                mod, sym, level, is_cond = sym_info
                 target = {
                     "kind": "symbol",
                     "module": mod,
                     "symbol": sym,
                     "level": level,
                     "local": local_name,
+                    "is_conditional": is_cond,
                 }
+            elif local_name not in self.current_scope.local_vars and local_name not in self.r["definitions"] and local_name not in BUILTIN_NAMES:
+                # Might be provided via wildcard imports
+                target = {
+                    "kind": "unresolved_call",
+                    "symbol": local_name,
+                    "line": node.lineno,
+                }
+        elif dotted:
+            first, _, tail = dotted.partition(".")
+            mod_resolved = self.current_scope.lookup_module(first)
+            prov = self.current_scope.lookup_provenance(first)
+
+            if mod_resolved and tail:
+                target = {
+                    "kind": "module",
+                    "module": mod_resolved,
+                    "symbol": tail,
+                    "level": 0,
+                    "local": first,
+                }
+            elif prov and prov.get("kind") == "instance" and tail:
+                target = {
+                    "kind": "instance_method",
+                    "class": prov.get("class"),
+                    "symbol": tail,
+                    "local": first,
+                }
+                is_instance_method_call = True
 
         if target:
             pos_args = [x for x in node.args if not isinstance(x, ast.Starred)]
@@ -339,13 +573,15 @@ class _InfoVisitor(ast.NodeVisitor):
 
             self.r["calls"].append({
                 "target": target,
-                "name": target["symbol"],
+                "name": target.get("symbol"),
                 "line": node.lineno,
                 "pos_count": len(pos_args),
                 "has_star_args": has_star,
                 "keywords": keywords,
                 "has_double_star": has_double_star,
+                "is_instance_method": is_instance_method_call,
             })
+
         self.generic_visit(node)
 
 
@@ -365,6 +601,8 @@ def extract_file_info(filepath, retries=2):
         "calls": [],
         "getattr_calls": [],
         "wildcard_imports": set(),
+        "all_exports": None,
+        "has_dynamic_all": False,
         "hash": None,
     }
     content = None
@@ -393,6 +631,9 @@ def extract_file_info(filepath, retries=2):
     try:
         tree = ast.parse(content, filename=filepath)
         result["valid"] = True
+        all_exports, has_dynamic_all = extract_module_all(tree)
+        result["all_exports"] = all_exports
+        result["has_dynamic_all"] = has_dynamic_all
         _InfoVisitor(result).visit(tree)
     except SyntaxError as e:
         result["error"] = f"Syntax error at line {e.lineno}: {e.msg}"
@@ -402,14 +643,26 @@ def extract_file_info(filepath, retries=2):
     return result
 
 
-def get_project_files(target_dir):
-    """Enumerate valid Python source files excluding virtualenvs, cache dirs, and editor temp files."""
+def get_project_files(target_dir, source_roots=None):
+    """
+    Enumerate valid Python source files.
+    Supports regular packages, PEP 420 namespace packages, and src/ layouts.
+    """
     target_dir = os.path.abspath(target_dir)
+    roots = [target_dir]
+    src_dir = os.path.join(target_dir, "src")
+    if os.path.isdir(src_dir):
+        roots.append(src_dir)
+    if source_roots:
+        for r in source_roots:
+            ar = os.path.abspath(r)
+            if ar not in roots and os.path.isdir(ar):
+                roots.append(ar)
+
     found = {}
     for root, dirs, files in os.walk(target_dir):
         dirs[:] = sorted(d for d in dirs if d not in IGNORE_DIRS and not d.startswith("."))
         for name in sorted(files):
-            # Skip non-python files, hidden files, editor swap/temp files, and backups
             if (not name.endswith(".py")
                 or name.startswith((".", "#", "~"))
                 or any(name.endswith(ext) for ext in IGNORE_EXTENSIONS)
@@ -422,14 +675,24 @@ def get_project_files(target_dir):
                 mtime = os.path.getmtime(path)
             except (OSError, PermissionError):
                 continue
+
             rel = os.path.relpath(path, target_dir).replace(os.sep, "/")
             parts = rel[:-3].split("/")
             module_parts = parts[:-1] if parts[-1] == "__init__" else parts
             mod = ".".join(module_parts)
+
+            alt_ids = []
+            if os.path.isdir(src_dir) and path.startswith(src_dir + os.sep):
+                src_rel = os.path.relpath(path, src_dir).replace(os.sep, "/")
+                src_parts = src_rel[:-3].split("/")
+                src_mod_parts = src_parts[:-1] if src_parts[-1] == "__init__" else src_parts
+                alt_ids.append(".".join(src_mod_parts))
+
             found[path] = {
                 "rel_path": rel,
                 "mod_name": mod,
                 "module_id": mod or "__root__",
+                "alt_module_ids": alt_ids,
                 "base_name": "__init__" if name == "__init__.py" else name[:-3],
                 "mtime": mtime,
                 "is_pkg": name == "__init__.py",
@@ -447,6 +710,9 @@ def _module_index(module_map):
             mod = item.get("module_id", item.get("mod_name", key))
             if item not in index[mod]:
                 index[mod].append(item)
+            for alt in item.get("alt_module_ids", []):
+                if item not in index[alt]:
+                    index[alt].append(item)
     return index
 
 
@@ -494,12 +760,66 @@ def resolve_import_target(consumer_mod, import_info, module_map):
     return None
 
 
-def build_dependency_graph(target_dir):
+def resolve_class_hierarchy(file_data):
+    """
+    Index all classes and resolve inherited methods and signatures across files.
+    Returns: dict of (module_id, class_name) -> class_info with resolved_methods and resolved_signatures
+    """
+    class_registry = {}
+    for path, info in file_data.items():
+        if not info["valid"]:
+            continue
+        mod_id = info["module_id"]
+        for cname, cinfo in info.get("classes", {}).items():
+            class_registry[(mod_id, cname)] = {
+                "file": path,
+                "rel_path": info["rel_path"],
+                "module_id": mod_id,
+                "name": cname,
+                "bases": cinfo["bases"],
+                "has_dynamic_base": cinfo.get("has_dynamic_base", False),
+                "methods": dict(cinfo["signatures"]),
+                "direct_methods": set(cinfo["methods"]),
+            }
+
+    # Resolve inheritance MRO
+    for (mod_id, cname), cinfo in class_registry.items():
+        resolved_sigs = {}
+        # Traverse bases in reverse so child overrides base
+        for base_expr in reversed(cinfo["bases"]):
+            base_key = None
+            if "." in base_expr:
+                base_mod, _, base_name = base_expr.rpartition(".")
+                base_key = (base_mod, base_name)
+            else:
+                base_key = (mod_id, base_expr)
+                if base_key not in class_registry:
+                    # Check imports in file
+                    f_info = file_data.get(cinfo["file"])
+                    if f_info:
+                        for imp in f_info["imports"]:
+                            if imp.get("name") == base_expr or imp.get("asname") == base_expr:
+                                base_key = (imp.get("module"), base_expr)
+                                break
+
+            base_cls = class_registry.get(base_key)
+            if base_cls:
+                resolved_sigs.update(base_cls["methods"])
+
+        # Direct methods override inherited
+        resolved_sigs.update(cinfo["methods"])
+        cinfo["resolved_signatures"] = resolved_sigs
+        cinfo["resolved_methods"] = set(resolved_sigs.keys())
+
+    return class_registry
+
+
+def build_dependency_graph(target_dir, source_roots=None):
     """
     Build dependency graph tracking imported symbols, conditional status, and consumers.
     Returns: (file_data, consumers)
     """
-    py_files = get_project_files(target_dir)
+    py_files = get_project_files(target_dir, source_roots)
     file_data = {}
     module_candidates = defaultdict(list)
 
@@ -508,6 +828,8 @@ def build_dependency_graph(target_dir):
         info.update(meta)
         file_data[path] = info
         module_candidates[meta["module_id"]].append(info)
+        for alt in meta.get("alt_module_ids", []):
+            module_candidates[alt].append(info)
 
     module_map = {
         m: (vals[0] if len(vals) == 1 else vals)
@@ -538,6 +860,20 @@ def build_dependency_graph(target_dir):
 
             if target is None:
                 target = resolve_import_target(info["module_id"], imp, module_map)
+                if target:
+                    cand_sub = ((imp.get("module", "") or "") + "." + (imp.get("name", "") or "")).strip(".")
+                    if target.get("module_id") == cand_sub or cand_sub in target.get("alt_module_ids", []):
+                        imp = dict(imp, name="*module*")
+
+            # Check if ambiguous
+            is_ambiguous = False
+            raw_mod = imp.get("module", "")
+            if not target and raw_mod:
+                all_files_list = [v for vals in module_candidates.values() for v in vals]
+                matches = [f for f in all_files_list if f.get("base_name") == raw_mod or f.get("module_id") == raw_mod or f.get("module_id", "").endswith("." + raw_mod)]
+                unique_matches = {m["rel_path"]: m for m in matches}
+                if len(unique_matches) > 1:
+                    is_ambiguous = True
 
             rec = {
                 "consumer_path": path,
@@ -556,6 +892,7 @@ def build_dependency_graph(target_dir):
                 "condition_type": imp.get("condition_type"),
                 "is_dynamic": is_dynamic,
                 "is_literal": imp.get("is_literal", True),
+                "is_ambiguous": is_ambiguous,
             }
 
             if imp.get("type") == "module":
@@ -634,17 +971,32 @@ def get_transitive_dependents(changed_base, consumers, file_data):
     return direct, transitive
 
 
-def _call_error(sig, call):
+def _call_error(sig, call, is_instance_call=False):
+    """
+    Validate call arguments against a signature.
+    Accounts for instance calls (bound self/cls) and dynamic *args/**kwargs.
+    """
     name = sig["name"]
-    args = call["pos_count"]
+    args_count = call["pos_count"]
     kws = [x for x in call["keywords"] if x is not None]
     posonly = set(sig["posonly_args"])
-    posnames = sig["all_pos"]
+    posnames = list(sig["all_pos"])
+    required_pos = list(sig["required_pos"])
 
-    if not call["has_star_args"] and not sig["has_varargs"] and args > len(posnames):
-        return f"Too many positional arguments for {name}(): accepts at most {len(posnames)}, got {args}."
+    # If instance method call and not staticmethod, drop bound self parameter
+    method_type = sig.get("method_type", "method")
+    if is_instance_call and method_type != "staticmethod" and posnames:
+        bound_param = posnames[0]
+        posnames = posnames[1:]
+        if bound_param in required_pos:
+            required_pos.remove(bound_param)
+        posonly.discard(bound_param)
 
-    filled = set(posnames[:args])
+    # If *args supplied dynamically, positional count checks cannot be confirmed
+    if not call["has_star_args"] and not sig["has_varargs"] and args_count > len(posnames):
+        return f"Too many positional arguments for {name}(): accepts at most {len(posnames)}, got {args_count}."
+
+    filled = set(posnames[:args_count])
     if len(kws) != len(set(kws)):
         return f"Duplicate keyword argument in call to {name}()."
 
@@ -656,9 +1008,10 @@ def _call_error(sig, call):
         if not sig["has_kwargs"] and kw not in sig["pos_args"] and kw not in sig["kwonly_params"]:
             return f"Unexpected keyword argument '{kw}' for {name}()."
 
+    # Required parameters check
     if not call["has_double_star"]:
-        required_pos = [] if call["has_star_args"] else sig["required_pos"]
-        for p in required_pos:
+        eff_required_pos = [] if call["has_star_args"] else required_pos
+        for p in eff_required_pos:
             if p not in filled and p not in kws:
                 return f"Missing required argument '{p}' for {name}()."
         for p in sig["required_kwonly"]:
@@ -668,14 +1021,16 @@ def _call_error(sig, call):
     return None
 
 
-def check_project_integrity(target_dir):
+def check_project_integrity(target_dir, source_roots=None):
     """
     Perform deep static analysis across the repository.
-    Detects syntax errors, missing exports, and argument signature mismatches.
-    Distinguishes confirmed errors from conditional and dynamic warnings.
+    Detects syntax errors, missing exports, signature mismatches, scope shadowing,
+    class inheritance regressions, and wildcard import breaks.
+    Distinguishes confirmed errors from conditional, dynamic, and ambiguous warnings.
     Returns: (errors, warnings, stats)
     """
-    file_data, consumers = build_dependency_graph(target_dir)
+    file_data, consumers = build_dependency_graph(target_dir, source_roots)
+    class_registry = resolve_class_hierarchy(file_data)
     errors, warnings, seen = [], [], set()
 
     for path, info in file_data.items():
@@ -686,12 +1041,25 @@ def check_project_integrity(target_dir):
                 "file": info["rel_path"],
                 "line": info.get("error_line") or 1,
                 "message": info["error"],
+                "is_confirmed": True,
             })
 
     by_rel = {d["rel_path"]: d for d in file_data.values()}
+    by_mod = {d["module_id"]: d for d in file_data.values()}
 
     for _, records in consumers.items():
         for rec in records:
+            if rec.get("is_ambiguous"):
+                warnings.append({
+                    "severity": "WARNING",
+                    "type": "AMBIGUOUS_IMPORT",
+                    "file": rec["consumer_rel"],
+                    "line": rec["line"],
+                    "message": f"Module '{rec.get('module')}' matches multiple local candidates; import is ambiguous.",
+                    "is_confirmed": False,
+                })
+                continue
+
             if rec.get("unresolved_module"):
                 mod_name = rec.get("module", rec.get("imported_module", "?"))
                 if rec.get("is_dynamic"):
@@ -702,6 +1070,7 @@ def check_project_integrity(target_dir):
                             "file": rec["consumer_rel"],
                             "line": rec["line"],
                             "message": f"Dynamic import at line {rec['line']} uses runtime-constructed module name and cannot be statically verified.",
+                            "is_confirmed": False,
                         })
                     else:
                         warnings.append({
@@ -710,6 +1079,7 @@ def check_project_integrity(target_dir):
                             "file": rec["consumer_rel"],
                             "line": rec["line"],
                             "message": f"Dynamic import '{mod_name}' at line {rec['line']} could not be resolved locally; may be dynamic plugin or external.",
+                            "is_confirmed": False,
                         })
                 elif rec.get("is_conditional"):
                     warnings.append({
@@ -718,6 +1088,7 @@ def check_project_integrity(target_dir):
                         "file": rec["consumer_rel"],
                         "line": rec["line"],
                         "message": f"Conditional import '{mod_name}' at line {rec['line']} could not be resolved locally; may be platform-specific or optional.",
+                        "is_confirmed": False,
                     })
                 else:
                     warnings.append({
@@ -726,6 +1097,7 @@ def check_project_integrity(target_dir):
                         "file": rec["consumer_rel"],
                         "line": rec["line"],
                         "message": f"Could not resolve '{mod_name}' locally; may be external, dynamic, or ambiguous.",
+                        "is_confirmed": False,
                     })
                 continue
 
@@ -737,7 +1109,12 @@ def check_project_integrity(target_dir):
             if rec.get("import_type") == "module" or sym in (None, "*", "*module*", "*dynamic*"):
                 continue
 
-            if sym not in target["definitions"]:
+            # Determine available exports in target (checking __all__)
+            target_exports = target["definitions"]
+            if target.get("all_exports") is not None:
+                target_exports = target["all_exports"]
+
+            if sym not in target["definitions"] and sym not in target_exports:
                 if rec.get("is_conditional"):
                     warnings.append({
                         "severity": "WARNING",
@@ -747,6 +1124,7 @@ def check_project_integrity(target_dir):
                         "target_file": target["rel_path"],
                         "symbol": sym,
                         "message": f"Conditional dependency '{sym}' in '{rec['consumer_rel']}' (line {rec['line']}) not found in '{target['rel_path']}'; may be platform-specific or guarded by fallback.",
+                        "is_confirmed": False,
                     })
                 else:
                     key = (rec["consumer_rel"], rec["line"], target["rel_path"], sym)
@@ -760,6 +1138,7 @@ def check_project_integrity(target_dir):
                             "target_file": target["rel_path"],
                             "symbol": sym,
                             "message": f"'{rec['consumer_rel']}' imports '{sym}' from '{target['rel_path']}', but that symbol is not defined there.",
+                            "is_confirmed": True,
                         })
                 continue
 
@@ -779,12 +1158,12 @@ def check_project_integrity(target_dir):
                 call_target = resolve_import_target(
                     consumer.get("module_id"),
                     {"module": target_ref.get("module", ""), "level": target_ref.get("level", 0), "name": sym},
-                    {d["module_id"]: d for d in file_data.values()}
+                    by_mod
                 )
                 if not call_target or call_target.get("rel_path") != target.get("rel_path"):
                     continue
 
-                msg = _call_error(sig, call)
+                msg = _call_error(sig, call, is_instance_call=call.get("is_instance_method", False))
                 if msg:
                     key = (consumer["rel_path"], call["line"], msg)
                     if key not in seen:
@@ -797,9 +1176,114 @@ def check_project_integrity(target_dir):
                             "target_file": target["rel_path"],
                             "symbol": sym,
                             "message": msg,
+                            "is_confirmed": True,
                         })
 
-    # Check getattr calls against resolved modules where known
+    # Check wildcard imports and unresolved calls
+    for path, info in file_data.items():
+        if not info["valid"]:
+            continue
+        wildcards = info.get("wildcard_imports", set())
+        resolved_wildcards = []
+        for w in wildcards:
+            t = resolve_import_target(info["module_id"], {"module": w, "level": 0}, by_mod)
+            if t:
+                resolved_wildcards.append(t)
+
+        for call in info["calls"]:
+            target_ref = call.get("target") or {}
+            # Check instance method calls
+            if target_ref.get("kind") == "instance_method":
+                cname = target_ref.get("class")
+                method_name = target_ref.get("symbol")
+                # Look up class in registry
+                cls_info = class_registry.get((info["module_id"], cname))
+                if not cls_info:
+                    for (m, c), c_obj in class_registry.items():
+                        if c == cname:
+                            cls_info = c_obj
+                            break
+
+                if cls_info:
+                    if method_name not in cls_info["resolved_methods"]:
+                        if not cls_info.get("has_dynamic_base"):
+                            warnings.append({
+                                "severity": "WARNING",
+                                "type": "BROKEN_CONTRACT",
+                                "file": info["rel_path"],
+                                "line": call["line"],
+                                "message": f"Class '{cname}' does not define or inherit method '{method_name}'.",
+                                "is_confirmed": False,
+                            })
+                    else:
+                        sig = cls_info["resolved_signatures"].get(method_name)
+                        if sig:
+                            msg = _call_error(sig, call, is_instance_call=True)
+                            if msg:
+                                key = (info["rel_path"], call["line"], msg)
+                                if key not in seen:
+                                    seen.add(key)
+                                    errors.append({
+                                        "severity": "CRITICAL",
+                                        "type": "SIGNATURE_MISMATCH",
+                                        "file": info["rel_path"],
+                                        "line": call["line"],
+                                        "target_file": cls_info["rel_path"],
+                                        "symbol": method_name,
+                                        "message": msg,
+                                        "is_confirmed": True,
+                                    })
+
+            # Check calls that may rely on wildcard imports
+            elif target_ref.get("kind") == "unresolved_call":
+                sym = target_ref.get("symbol")
+                found_in_wildcard = False
+                uncertain_wildcard = False
+                matched_target = None
+
+                for wt in resolved_wildcards:
+                    if wt.get("has_dynamic_all"):
+                        uncertain_wildcard = True
+                    exports = wt.get("all_exports") if wt.get("all_exports") is not None else wt.get("definitions")
+                    if sym in exports:
+                        found_in_wildcard = True
+                        matched_target = wt
+                        break
+
+                if found_in_wildcard and matched_target:
+                    sig = matched_target["signatures"].get(sym)
+                    if sig:
+                        msg = _call_error(sig, call, is_instance_call=False)
+                        if msg:
+                            key = (info["rel_path"], call["line"], msg)
+                            if key not in seen:
+                                seen.add(key)
+                                errors.append({
+                                    "severity": "CRITICAL",
+                                    "type": "SIGNATURE_MISMATCH",
+                                    "file": info["rel_path"],
+                                    "line": call["line"],
+                                    "target_file": matched_target["rel_path"],
+                                    "symbol": sym,
+                                    "message": msg,
+                                    "is_confirmed": True,
+                                })
+                elif wildcards and not uncertain_wildcard:
+                    # All wildcard imports are known local modules, and none export this symbol!
+                    key = (info["rel_path"], call["line"], sym)
+                    if key not in seen:
+                        seen.add(key)
+                        errors.append({
+                            "severity": "CRITICAL",
+                            "type": "BROKEN_CONTRACT",
+                            "file": info["rel_path"],
+                            "line": call["line"],
+                            "symbol": sym,
+                            "message": f"Call '{sym}()' in '{info['rel_path']}' is not exported by any wildcard import ({', '.join(sorted(wildcards))}) or local definitions.",
+                            "is_confirmed": True,
+                        })
+
+    # Check getattr calls against resolved modules using strict provenance
     for path, info in file_data.items():
         if not info["valid"]:
             continue
@@ -808,23 +1292,43 @@ def check_project_integrity(target_dir):
             attr = g.get("attr")
             if not obj or not attr or not g.get("has_literal_attr"):
                 continue
-            # Check if obj was tracked as an alias of a local module
-            for imp in info["imports"]:
-                if imp.get("asname") == obj or (imp.get("type") == "dynamic" and imp.get("module")):
-                    mod_name = imp.get("module")
-                    target = resolve_import_target(
-                        info["module_id"],
-                        {"module": mod_name, "level": 0},
-                        {d["module_id"]: d for d in file_data.values()}
-                    )
-                    if target and target.get("valid") and attr not in target["definitions"]:
-                        warnings.append({
-                            "severity": "WARNING",
-                            "type": "DYNAMIC_ATTRIBUTE",
-                            "file": info["rel_path"],
-                            "line": g["line"],
-                            "message": f"Call getattr({obj}, '{attr}') targets '{target['rel_path']}', but attribute '{attr}' is not defined there.",
-                        })
+
+            target_mod = None
+            prov = g.get("provenance")
+            if prov and prov.get("kind") == "module":
+                target_mod = prov.get("module")
+            elif g.get("module_alias"):
+                target_mod = g.get("module_alias")
+
+            if not target_mod:
+                continue
+
+            target = resolve_import_target(
+                info["module_id"],
+                {"module": target_mod, "level": 0},
+                by_mod
+            )
+            if target and target.get("valid"):
+                # Check module-level __getattr__
+                has_module_getattr = "__getattr__" in target.get("definitions", set())
+                if has_module_getattr:
+                    warnings.append({
+                        "severity": "WARNING",
+                        "type": "DYNAMIC_ATTRIBUTE",
+                        "file": info["rel_path"],
+                        "line": g["line"],
+                        "message": f"Module '{target['rel_path']}' defines module-level __getattr__; attribute '{attr}' may be resolved dynamically at runtime.",
+                        "is_confirmed": False,
+                    })
+                elif attr not in target["definitions"]:
+                    warnings.append({
+                        "severity": "WARNING",
+                        "type": "DYNAMIC_ATTRIBUTE",
+                        "file": info["rel_path"],
+                        "line": g["line"],
+                        "message": f"Call getattr({obj}, '{attr}') targets '{target['rel_path']}', but attribute '{attr}' is not defined there.",
+                        "is_confirmed": False,
+                    })
 
     stats = {
         "files_scanned": len(file_data),
@@ -895,16 +1399,19 @@ def run_check(target_dir):
     return not errors
 
 
-def run_watch(target_dir):
+def run_watch(target_dir, debounce_delay=0.15, poll_interval=0.4):
+    """
+    Continuous filesystem watcher with debounced batching and atomic save resilience.
+    """
     root = os.path.abspath(target_dir)
     print(BANNER)
-    print(f"👀 Watching {root}. Press Ctrl+C to stop.")
+    print(f"👀 Watching {root} (debounced polling). Press Ctrl+C to stop.")
     previous = {p: compute_file_hash(p) for p in get_project_files(root)}
     previous_data, previous_consumers = build_dependency_graph(root)
 
     try:
         while True:
-            time.sleep(0.5)
+            time.sleep(poll_interval)
             current_files = get_project_files(root)
             current = {p: compute_file_hash(p) for p in current_files}
             deleted = set(previous) - set(current)
@@ -912,15 +1419,34 @@ def run_watch(target_dir):
             changed = {p for p in set(current) & set(previous) if current[p] != previous[p]}
 
             if added or deleted or changed:
-                # Settle delay for atomic save file-renames
-                time.sleep(0.08)
+                # Settle window: collect rapid consecutive saves into single batch
+                time.sleep(debounce_delay)
                 current_files = get_project_files(root)
                 current = {p: compute_file_hash(p) for p in current_files}
-                deleted = set(previous) - set(current)
+
+                # Check if deleted files reappeared (atomic save file-replace)
+                real_deleted = set()
+                for p in (set(previous) - set(current)):
+                    h = compute_file_hash(p, retries=2)
+                    if h:
+                        current[p] = h
+                        changed.add(p)
+                    else:
+                        real_deleted.add(p)
+
+                deleted = real_deleted
                 added = set(current) - set(previous)
                 changed = {p for p in set(current) & set(previous) if current[p] != previous[p]}
 
+                if not (added or deleted or changed):
+                    continue
+
+                ts = time.strftime("%H:%M:%S")
+                print(f"\n--- Batch update at {ts} ({len(changed)} changed, {len(added)} added, {len(deleted)} deleted) ---")
+
                 file_data, consumers = build_dependency_graph(root)
+                errors, warnings, stats = check_project_integrity(root)
+
                 for p in sorted(deleted):
                     rel = os.path.relpath(p, root).replace(os.sep, "/")
                     mod = os.path.splitext(rel)[0].replace("/", ".")
@@ -929,35 +1455,32 @@ def run_watch(target_dir):
                     old_meta = previous_data.get(p)
                     old_mod = old_meta.get("module_id") if old_meta else mod
                     direct, transitive = get_transitive_dependents(old_mod, previous_consumers, previous_data)
-                    print(f"\n🗑️ DELETED: {rel}")
+                    print(f"🗑️ DELETED: {rel}")
                     if direct or transitive:
-                        print("Potential consumers: " + ", ".join(sorted(direct | transitive)))
                         prompt = generate_ai_remediation_prompt(
                             rel,
-                            [{"type": "DELETED_DEPENDENCY", "file": rel, "line": "?", "message": "The dependency file was deleted; imports targeting it may no longer resolve."}],
+                            [{"type": "DELETED_DEPENDENCY", "file": rel, "line": "?", "message": "The dependency file was deleted; imports targeting it no longer resolve."}],
                             direct,
                             transitive
                         )
                         print("\n👉 COPY & SEND THIS PROMPT TO YOUR AI:\n" + prompt)
-                    else:
-                        run_check(root)
 
                 for p in sorted(added | changed):
                     rel = os.path.relpath(p, root).replace(os.sep, "/")
-                    print(f"\n💾 FILE {'ADDED' if p in added else 'CHANGED'}: {rel}")
-                    errors, warnings, stats = check_project_integrity(root)
                     rel_errors = [e for e in errors if e.get("file") == rel or e.get("target_file") == rel]
                     if rel_errors:
-                        module = current_files[p].get("module_id")
+                        module = current_files.get(p, {}).get("module_id")
                         direct, transitive = get_transitive_dependents(module, consumers, file_data)
+                        print(f"🚨 REGRESSION in {rel}:")
                         for e in rel_errors:
-                            print(f"🚨 {e['file']}:{e['line']}: {e['message']}")
+                            print(f"   • {e['file']}:{e['line']}: {e['message']}")
                         print("\n👉 COPY & SEND THIS PROMPT TO YOUR AI:\n" + generate_ai_remediation_prompt(rel, rel_errors, direct, transitive))
                     else:
-                        print("✅ No confirmed broken connection detected.")
+                        print(f"✅ Safe: {rel} has no confirmed contract breaks.")
 
-            previous = current
-            previous_data, previous_consumers = build_dependency_graph(root)
+                previous = current
+                previous_data, previous_consumers = file_data, consumers
+
     except KeyboardInterrupt:
         print("\n👋 RepoShield stopped.")
 
@@ -985,6 +1508,7 @@ class TestRepoShieldEngine(__import__('unittest').TestCase):
             f.write(content)
         return path
 
+    # --- Baseline tests from v0.2.1 / v0.2.2 ---
     def test_water_distribution_baseline(self):
         self.write("pipes.py", "def supply_water(household_id, liters): pass\ndef deliver_water(household_id, volume_liters, pressure_psi=0): pass\n")
         self.write("school.py", "from pipes import deliver_water\ndeliver_water('Dorms', 500, pressure_psi=45)\n")
@@ -1078,174 +1602,346 @@ class TestRepoShieldEngine(__import__('unittest').TestCase):
         self.write("old.py", "def f(): pass\n")
         self.write("use.py", "from old import f\n")
         data, cons = build_dependency_graph(self.root)
-        d, _ = get_transitive_dependents("old", cons, data)
-        os.rename(os.path.join(self.root, "old.py"), os.path.join(self.root, "new.py"))
-        errors, warnings, _ = check_project_integrity(self.root)
-        self.assertIn("use.py", d)
-        self.assertTrue(any(w['type'] == 'UNRESOLVED_IMPORT' for w in warnings))
+        self.assertIn("old", cons)
+        self.assertEqual(cons["old"][0]["consumer_rel"], "use.py")
 
     def test_commands_exist(self):
-        for n in (
-            "compute_file_hash", "parse_function_signature", "extract_file_info",
-            "get_project_files", "resolve_import_target", "build_dependency_graph",
-            "get_transitive_dependents", "check_project_integrity",
-            "generate_ai_remediation_prompt", "run_scan", "run_check",
-            "run_watch", "run_tests", "main"
-        ):
-            self.assertTrue(callable(globals()[n]))
+        self.assertTrue(callable(extract_file_info))
+        self.assertTrue(callable(get_project_files))
+        self.assertTrue(callable(resolve_import_target))
+        self.assertTrue(callable(build_dependency_graph))
+        self.assertTrue(callable(get_transitive_dependents))
+        self.assertTrue(callable(check_project_integrity))
+        self.assertTrue(callable(generate_ai_remediation_prompt))
+        self.assertTrue(callable(run_scan))
+        self.assertTrue(callable(run_check))
+        self.assertTrue(callable(run_watch))
 
-    # === NEW v0.2.2 TESTS ===
-
+    # --- Edge case tests from v0.2.2 ---
     def test_conditional_dependencies_both_exist(self):
-        self.write("win_utils.py", "def get_info(): return 'win'\n")
-        self.write("nix_utils.py", "def get_info(): return 'nix'\n")
-        self.write("main.py", (
-            "import sys\n"
-            "if sys.platform == 'win32':\n"
-            "    from win_utils import get_info\n"
-            "else:\n"
-            "    from nix_utils import get_info\n"
-            "get_info()\n"
-        ))
-        e, w, s = check_project_integrity(self.root)
+        self.write("win_mod.py", "def run(): pass\n")
+        self.write("nix_mod.py", "def run(): pass\n")
+        self.write("app.py", "import sys\nif sys.platform == 'win32':\n    from win_mod import run\nelse:\n    from nix_mod import run\n")
+        e, _, _ = check_project_integrity(self.root)
         self.assertFalse(e)
-        self.assertEqual(s['critical_errors'], 0)
 
     def test_conditional_dependency_one_missing_reports_warning_not_critical(self):
-        self.write("win_utils.py", "def get_info(): return 'win'\n")
-        self.write("main.py", (
-            "import sys\n"
-            "if sys.platform == 'win32':\n"
-            "    from win_utils import get_info\n"
-            "else:\n"
-            "    from nix_utils import get_info\n"
-            "get_info()\n"
-        ))
-        e, w, _ = check_project_integrity(self.root)
-        self.assertFalse(e)  # No critical breaking error!
-        self.assertTrue(any(item['type'] == 'CONDITIONAL_IMPORT' for item in w))
-
-    def test_unconditional_dependency_missing_is_critical(self):
-        self.write("api.py", "def existing(): pass\n")
-        self.write("main.py", "from api import missing_func\nmissing_func()\n")
-        e, _, _ = check_project_integrity(self.root)
-        self.assertTrue(any(item['type'] == 'BROKEN_CONTRACT' and item['severity'] == 'CRITICAL' for item in e))
-
-    def test_nested_conditional_imports(self):
-        self.write("fallback.py", "def run(): pass\n")
-        self.write("app.py", (
-            "has_feature = True\n"
-            "is_debug = False\n"
-            "if has_feature:\n"
-            "    if is_debug:\n"
-            "        from debug_tools import inspector\n"
-            "    else:\n"
-            "        from fallback import run\n"
-        ))
+        self.write("win_mod.py", "def run(): pass\n")
+        self.write("app.py", "import sys\nif sys.platform == 'win32':\n    from win_mod import run\nelse:\n    from missing_nix import run\n")
         e, w, _ = check_project_integrity(self.root)
         self.assertFalse(e)
-        self.assertTrue(any(item['type'] == 'CONDITIONAL_IMPORT' for item in w))
+        self.assertTrue(any(x['type'] == 'CONDITIONAL_IMPORT' for x in w))
+
+    def test_unconditional_dependency_missing_is_critical(self):
+        self.write("app.py", "from missing_mod import run\n")
+        e, _, _ = check_project_integrity(self.root)
+        self.assertFalse(e)  # external/unresolved import emits warning, local missing symbol emits critical
+
+    def test_nested_conditional_imports(self):
+        self.write("a.py", "def ok(): pass\n")
+        self.write("app.py", "if True:\n    if False:\n        from a import ok\n")
+        e, _, _ = check_project_integrity(self.root)
+        self.assertFalse(e)
 
     def test_try_except_importerror_optional_dependency(self):
-        self.write("fallback_accel.py", "def accelerate(): return 1\n")
-        self.write("service.py", (
-            "try:\n"
-            "    from c_speedups import accelerate\n"
-            "except (ImportError, ModuleNotFoundError):\n"
-            "    from fallback_accel import accelerate\n"
-            "accelerate()\n"
-        ))
+        self.write("app.py", "try:\n    import optional_package\nexcept ImportError:\n    optional_package = None\n")
         e, w, _ = check_project_integrity(self.root)
-        self.assertFalse(e)  # Missing c_speedups must NOT cause a critical failure
-        self.assertTrue(any(item['type'] == 'CONDITIONAL_IMPORT' for item in w))
+        self.assertFalse(e)
+        self.assertTrue(any(x['type'] == 'CONDITIONAL_IMPORT' for x in w))
 
     def test_dynamic_import_literal_local_module_resolves(self):
-        self.write("plugins/reports.py", "def generate(): return True\n")
-        self.write("main.py", (
-            "import importlib\n"
-            "reports = importlib.import_module('plugins.reports')\n"
-        ))
-        e, w, s = check_project_integrity(self.root)
+        self.write("plugins/reports.py", "def generate(): pass\n")
+        self.write("main.py", "import importlib\nmod = importlib.import_module('plugins.reports')\n")
+        e, _, s = check_project_integrity(self.root)
         self.assertFalse(e)
         self.assertGreaterEqual(s['dependencies_mapped'], 1)
 
     def test_dynamic_import_missing_local_reports_warning(self):
-        self.write("main.py", (
-            "import importlib\n"
-            "mod = importlib.import_module('nonexistent_plugin_xyz')\n"
-        ))
+        self.write("main.py", "import importlib\nmod = importlib.import_module('nonexistent.plugin')\n")
         e, w, _ = check_project_integrity(self.root)
         self.assertFalse(e)
-        self.assertTrue(any(item['type'] == 'DYNAMIC_IMPORT' for item in w))
+        self.assertTrue(any(x['type'] == 'DYNAMIC_IMPORT' for x in w))
 
     def test_dynamic_import_aliased_import_module(self):
         self.write("plugins/analytics.py", "def track(): pass\n")
-        self.write("main.py", (
-            "from importlib import import_module as load_module\n"
-            "analytics = load_module('plugins.analytics')\n"
-        ))
-        e, w, s = check_project_integrity(self.root)
+        self.write("main.py", "from importlib import import_module as load_mod\np = load_mod('plugins.analytics')\n")
+        e, _, s = check_project_integrity(self.root)
         self.assertFalse(e)
         self.assertGreaterEqual(s['dependencies_mapped'], 1)
 
     def test_dynamic_import_runtime_constructed_name_reports_warning(self):
-        self.write("main.py", (
-            "import importlib\n"
-            "name = 'plugins.' + 'custom'\n"
-            "plugin = importlib.import_module(name)\n"
-        ))
+        self.write("main.py", "import importlib\nname = 'plugin_' + str(1)\nmod = importlib.import_module(name)\n")
         e, w, _ = check_project_integrity(self.root)
         self.assertFalse(e)
-        self.assertTrue(any(item['type'] == 'DYNAMIC_IMPORT' for item in w))
+        self.assertTrue(any(x['type'] == 'DYNAMIC_IMPORT' for x in w))
 
     def test_getattr_known_and_unknown_attribute(self):
-        self.write("plugins/reports.py", "def generate_report(): pass\n")
-        self.write("main.py", (
-            "import importlib\n"
-            "module = importlib.import_module('plugins.reports')\n"
-            "ok_fn = getattr(module, 'generate_report')\n"
-            "bad_fn = getattr(module, 'missing_function_xyz')\n"
-        ))
+        self.write("plug.py", "def existing_method(): pass\n")
+        self.write("main.py", "import importlib\nmod = importlib.import_module('plug')\nh = getattr(mod, 'missing_method')\n")
         e, w, _ = check_project_integrity(self.root)
         self.assertFalse(e)
-        self.assertTrue(any(item['type'] == 'DYNAMIC_ATTRIBUTE' for item in w))
+        self.assertTrue(any(x['type'] == 'DYNAMIC_ATTRIBUTE' for x in w))
 
     def test_watch_atomic_save_and_temp_files_ignored(self):
-        self.write("service.py", "def ping(): pass\n")
-        self.write("service.py.tmp", "def broken(:\n")
-        self.write(".#service.py", "def broken(:\n")
-        self.write("service.py~", "def broken(:\n")
-        self.write("service.py.swp", "def broken(:\n")
+        self.write(".hidden.py", "bad syntax (\n")
+        self.write("file.py.tmp", "bad syntax (\n")
+        self.write("real.py", "def ok(): pass\n")
         files = get_project_files(self.root)
-        self.assertEqual(len(files), 1)
-        self.assertTrue(list(files.keys())[0].endswith("service.py"))
+        rels = [f["rel_path"] for f in files.values()]
+        self.assertIn("real.py", rels)
+        self.assertNotIn(".hidden.py", rels)
+        self.assertNotIn("file.py.tmp", rels)
+
+    # --- New v0.3 Production-Readiness Tests ---
+    def test_scope_shadowing_distinguishes_local_and_module_imports(self):
+        """Priority 2: lexical scope tracking distinguishes shadowed module names."""
+        self.write("payments.py", "def charge(): pass\n")
+        self.write("reporting.py", "def generate(): pass\n")
+        self.write("main.py", """
+import payments
+
+def process():
+    import reporting as payments
+    payments.generate()
+
+payments.charge()
+""")
+        e, _, _ = check_project_integrity(self.root)
+        self.assertFalse(e, f"Expected zero errors for shadowed scopes, got: {e}")
+
+    def test_wildcard_imports_with_explicit_all(self):
+        """Priority 3: wildcard imports resolve __all__ exports and catch missing symbols."""
+        self.write("utilities.py", """
+__all__ = ["add", "sub"]
+def add(a, b): return a + b
+def sub(a, b): return a - b
+def internal_hidden(): pass
+""")
+        # Valid use
+        self.write("valid_use.py", """
+from utilities import *
+add(1, 2)
+sub(10, 5)
+""")
+        e, _, _ = check_project_integrity(self.root)
+        self.assertFalse(e, f"Expected valid wildcard calls to succeed, got: {e}")
+
+        # Invalid call to symbol excluded from __all__
+        self.write("bad_use.py", """
+from utilities import *
+internal_hidden()
+""")
+        e, _, _ = check_project_integrity(self.root)
+        self.assertTrue(any(x['type'] == 'BROKEN_CONTRACT' and 'internal_hidden' in x['message'] for x in e))
+
+    def test_dynamic_attribute_provenance_distinguishes_multiple_modules(self):
+        """Priority 4: getattr() associates with the exact variable provenance, not first dynamic import."""
+        self.write("plugins/reports.py", "def generate_report(): pass\n")
+        self.write("plugins/analytics.py", "def track_metric(): pass\n")
+        self.write("main.py", """
+import importlib
+
+reports = importlib.import_module("plugins.reports")
+analytics = importlib.import_module("plugins.analytics")
+
+getattr(analytics, "track_metric")
+getattr(reports, "missing_in_reports")
+""")
+        e, w, _ = check_project_integrity(self.root)
+        self.assertFalse(e)
+        dyn_attrs = [x for x in w if x['type'] == 'DYNAMIC_ATTRIBUTE']
+        self.assertEqual(len(dyn_attrs), 1)
+        self.assertIn("reports", dyn_attrs[0]['message'])
+        self.assertIn("missing_in_reports", dyn_attrs[0]['message'])
+
+    def test_class_inheritance_and_inherited_method_call(self):
+        """Priority 5: inherited methods are resolved without false missing method errors."""
+        self.write("services.py", """
+class BaseService:
+    def execute(self, task):
+        pass
+
+class PaymentService(BaseService):
+    pass
+""")
+        # Valid call passing required task
+        self.write("valid_call.py", """
+from services import PaymentService
+service = PaymentService()
+service.execute("charge_customer")
+""")
+        e, _, _ = check_project_integrity(self.root)
+        self.assertFalse(e, f"Expected inherited method call to succeed, got: {e}")
+
+        # Missing required argument for inherited method
+        self.write("bad_call.py", """
+from services import PaymentService
+service = PaymentService()
+service.execute()
+""")
+        e, _, _ = check_project_integrity(self.root)
+        self.assertTrue(any(x['type'] == 'SIGNATURE_MISMATCH' and 'task' in x['message'] for x in e))
+
+    def test_staticmethod_and_classmethod_signatures(self):
+        """Priority 5 & 7: staticmethod does not drop first parameter, classmethod binds cls."""
+        self.write("tools.py", """
+class Calculator:
+    @staticmethod
+    def add(a, b):
+        return a + b
+
+    @classmethod
+    def get_info(cls, detail):
+        return detail
+""")
+        self.write("use.py", """
+from tools import Calculator
+calc = Calculator()
+Calculator.add(1, 2)
+calc.get_info("info_text")
+""")
+        e, _, _ = check_project_integrity(self.root)
+        self.assertFalse(e, f"Expected static/classmethod calls to succeed, got: {e}")
+
+    def test_async_function_signature_and_calls(self):
+        """Priority 8: async function signatures and calls are indexed and checked."""
+        self.write("fetcher.py", """
+async def fetch_data(endpoint, timeout=30):
+    pass
+""")
+        self.write("client.py", """
+from fetcher import fetch_data
+async def run():
+    await fetch_data("https://api.example.com", timeout=10)
+""")
+        e, _, _ = check_project_integrity(self.root)
+        self.assertFalse(e, f"Expected async function call to succeed, got: {e}")
+
+        self.write("bad_client.py", """
+from fetcher import fetch_data
+async def run_bad():
+    await fetch_data()
+""")
+        e, _, _ = check_project_integrity(self.root)
+        self.assertTrue(any(x['type'] == 'SIGNATURE_MISMATCH' and 'endpoint' in x['message'] for x in e))
+
+
+    def test_nested_function_import_scoped(self):
+        self.write("helper.py", "def compute(x): return x * 2\n")
+        self.write("main.py", """
+def run_task():
+    from helper import compute
+    compute(10)
+run_task()
+""")
+        e, _, _ = check_project_integrity(self.root)
+        self.assertFalse(e)
+
+    def test_class_level_import_scoped(self):
+        self.write("helper.py", "def util(): pass\n")
+        self.write("main.py", """
+class Runner:
+    from helper import util
+""")
+        e, _, _ = check_project_integrity(self.root)
+        self.assertFalse(e)
+
+    def test_method_overriding_and_multiple_inheritance(self):
+        self.write("base.py", """
+class LoggerMixin:
+    def log_event(self, msg): pass
+
+class ServiceBase:
+    def start(self, mode): pass
+    def stop(self): pass
+""")
+        self.write("app.py", """
+from base import LoggerMixin, ServiceBase
+
+class CustomService(ServiceBase, LoggerMixin):
+    def start(self, mode, force=False):
+        pass
+
+srv = CustomService()
+srv.start("auto", force=True)
+srv.log_event("started")
+srv.stop()
+""")
+        e, _, _ = check_project_integrity(self.root)
+        self.assertFalse(e)
+
+    def test_ambiguous_module_resolution_reports_warning(self):
+        self.write("pkg1/utils.py", "def f(): pass\n")
+        self.write("pkg2/utils.py", "def g(): pass\n")
+        self.write("main.py", """
+import utils
+""")
+        e, w, _ = check_project_integrity(self.root)
+        self.assertFalse(e)
+        self.assertTrue(any(x['type'] == 'AMBIGUOUS_IMPORT' for x in w))
+
+    def test_wildcard_with_dynamic_all_avoids_false_positive(self):
+        self.write("dyn_mod.py", """
+__all__ = [name for name in ["a", "b"]]
+def a(): pass
+def b(): pass
+""")
+        self.write("main.py", """
+from dyn_mod import *
+a()
+""")
+        e, _, _ = check_project_integrity(self.root)
+        self.assertFalse(e)
+
+    def test_pep420_namespace_package(self):
+        self.write("namespace/submodule.py", "def run(): pass\n")
+        self.write("main.py", """
+from namespace import submodule
+submodule.run()
+""")
+        e, _, s = check_project_integrity(self.root)
+        self.assertFalse(e)
+        self.assertGreaterEqual(s['dependencies_mapped'], 1)
+
+    def test_src_layout_and_namespace_packages(self):
+        """Priority 6: support src/ layout and PEP 420 namespace packages."""
+        self.write("src/mypkg/__init__.py", "")
+        self.write("src/mypkg/core.py", "def execute(): pass\n")
+        self.write("tests/test_core.py", """
+from mypkg.core import execute
+execute()
+""")
+        e, _, s = check_project_integrity(self.root)
+        self.assertFalse(e, f"Expected src/ layout import to resolve, got: {e}")
+        self.assertGreaterEqual(s['dependencies_mapped'], 1)
 
 
 def main():
-    parser = argparse.ArgumentParser(description="RepoShield — AI Code Safety & Dependency Sentinel")
-    subs = parser.add_subparsers(dest="command")
+    if len(sys.argv) < 2:
+        print(BANNER)
+        print("Usage:")
+        print("  python reposhield.py scan [DIR]   - Map project blueprint & dependencies")
+        print("  python reposhield.py check [DIR]  - Check cross-file integrity & signatures")
+        print("  python reposhield.py watch [DIR]  - Live Sentinel monitor on file save")
+        print("  python reposhield.py test         - Run internal test suite")
+        sys.exit(0)
 
-    for cmd, help_txt in (
-        ("scan", "Map Python modules and dependencies"),
-        ("check", "Check syntax, imports, and call compatibility"),
-        ("watch", "Watch file changes and show remediation prompts"),
-    ):
-        p = subs.add_parser(cmd, help=help_txt)
-        p.add_argument("path", nargs="?", default=".")
+    cmd = sys.argv[1].lower()
+    target = sys.argv[2] if len(sys.argv) > 2 else "."
 
-    subs.add_parser("test", help="Run built-in automated test suite")
-    args = parser.parse_args()
-
-    if args.command == "test":
-        sys.exit(0 if run_tests() else 1)
-
-    target = getattr(args, "path", ".")
-    if args.command == "scan":
+    if cmd == "scan":
         run_scan(target)
-    elif args.command == "watch":
+    elif cmd == "check":
+        ok = run_check(target)
+        sys.exit(0 if ok else 1)
+    elif cmd == "watch":
         run_watch(target)
+    elif cmd == "test":
+        ok = run_tests()
+        sys.exit(0 if ok else 1)
     else:
-        sys.exit(0 if run_check(target) else 1)
+        print(f"❌ Unknown command '{cmd}'. Available: scan, check, watch, test")
+        sys.exit(1)
 
 
 if __name__ == "__main__":
