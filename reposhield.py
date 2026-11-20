@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-RepoShield v0.3.0 — AI Code Safety & Dependency Sentinel
+RepoShield v0.3.1 — AI Code Safety & Dependency Sentinel
 Lightweight, zero-dependency Python AST-based static analysis engine.
 Detects cross-file contract breaks, missing symbols, signature mismatches,
 scope shadowing, class inheritance regressions, and dynamic/conditional imports.
@@ -14,7 +14,7 @@ import sys
 import time
 from collections import defaultdict, deque
 
-VERSION = "0.3.0"
+VERSION = "0.3.1"
 
 BANNER = rf"""
 ======================================================================
@@ -859,7 +859,8 @@ def resolve_class_hierarchy(file_data):
             candidate = resolve_base(entry, base)
             if candidate and candidate not in resolved:
                 resolved.append(candidate)
-            else:
+            elif not candidate and base not in BUILTIN_NAMES:
+                # External/dynamic bases are unknown; never infer their methods.
                 entry["has_dynamic_base"] = True
         base_keys[key] = resolved
 
