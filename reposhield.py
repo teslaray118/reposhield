@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-RepoShield v0.3.0 — AI Code Safety & Dependency Sentinel
+RepoShield v0.3.1 — AI Code Safety & Dependency Sentinel
 Lightweight, zero-dependency Python AST-based static analysis engine.
 Detects cross-file contract breaks, missing symbols, signature mismatches,
 scope shadowing, class inheritance regressions, and dynamic/conditional imports.
@@ -14,7 +14,7 @@ import sys
 import time
 from collections import defaultdict, deque
 
-VERSION = "0.3.0"
+VERSION = "0.3.1"
 
 BANNER = rf"""
 ======================================================================
@@ -354,13 +354,18 @@ class _InfoVisitor(ast.NodeVisitor):
         return None
 
     def visit_Assign(self, node):
-        # 1. Track local variable definitions
+        # 1. Track local definitions and invalidate stale bindings on reassignment.
         assigned_names = []
         for t in node.targets:
             for n in ast.walk(t):
-                if isinstance(n, ast.Name):
+                if isinstance(n, ast.Name) and isinstance(n.ctx, ast.Store):
                     self.current_scope.local_vars.add(n.id)
-                    assigned_names.append(n.id)
+                    if n.id not in assigned_names:
+                        assigned_names.append(n.id)
+                    self.current_scope.module_aliases.pop(n.id, None)
+                    self.current_scope.symbol_aliases.pop(n.id, None)
+                    self.current_scope.provenance.pop(n.id, None)
+                    self.current_scope.dynamic_importers.discard(n.id)
                     if self.current_scope == self.root_scope:
                         self.r["definitions"].add(n.id)
 
@@ -402,9 +407,24 @@ class _InfoVisitor(ast.NodeVisitor):
 
     def visit_AnnAssign(self, node):
         if isinstance(node.target, ast.Name):
-            self.current_scope.local_vars.add(node.target.id)
+            name = node.target.id
+            self.current_scope.local_vars.add(name)
+            self.current_scope.module_aliases.pop(name, None)
+            self.current_scope.symbol_aliases.pop(name, None)
+            self.current_scope.provenance.pop(name, None)
+            self.current_scope.dynamic_importers.discard(name)
             if self.current_scope == self.root_scope:
-                self.r["definitions"].add(node.target.id)
+                self.r["definitions"].add(name)
+        self.generic_visit(node)
+
+    def visit_AugAssign(self, node):
+        if isinstance(node.target, ast.Name):
+            name = node.target.id
+            self.current_scope.local_vars.add(name)
+            self.current_scope.module_aliases.pop(name, None)
+            self.current_scope.symbol_aliases.pop(name, None)
+            self.current_scope.provenance.pop(name, None)
+            self.current_scope.dynamic_importers.discard(name)
         self.generic_visit(node)
 
     def visit_Import(self, node):
@@ -761,58 +781,136 @@ def resolve_import_target(consumer_mod, import_info, module_map):
 
 
 def resolve_class_hierarchy(file_data):
-    """
-    Index all classes and resolve inherited methods and signatures across files.
-    Returns: dict of (module_id, class_name) -> class_info with resolved_methods and resolved_signatures
+    """Resolve project-local inheritance using C3 linearization.
+
+    Existing registry keys are preserved. Unresolved or dynamic bases are
+    marked incomplete rather than guessed.
     """
     class_registry = {}
+    module_candidates = defaultdict(list)
     for path, info in file_data.items():
-        if not info["valid"]:
+        if not info.get("valid"):
             continue
-        mod_id = info["module_id"]
+        module_candidates[info.get("module_id", "")].append(info)
+        for alt in info.get("alt_module_ids", []):
+            module_candidates[alt].append(info)
+    module_map = {
+        name: (items[0] if len(items) == 1 else items)
+        for name, items in module_candidates.items()
+    }
+
+    for path, info in file_data.items():
+        if not info.get("valid"):
+            continue
+        mod_id = info.get("module_id", "")
         for cname, cinfo in info.get("classes", {}).items():
             class_registry[(mod_id, cname)] = {
-                "file": path,
-                "rel_path": info["rel_path"],
-                "module_id": mod_id,
-                "name": cname,
-                "bases": cinfo["bases"],
-                "has_dynamic_base": cinfo.get("has_dynamic_base", False),
-                "methods": dict(cinfo["signatures"]),
-                "direct_methods": set(cinfo["methods"]),
+                "file": path, "rel_path": info.get("rel_path", path),
+                "module_id": mod_id, "name": cname,
+                "bases": list(cinfo.get("bases", [])),
+                "has_dynamic_base": bool(cinfo.get("has_dynamic_base", False)),
+                "methods": dict(cinfo.get("signatures", {})),
+                "direct_methods": set(cinfo.get("methods", set())),
+                "imports": list(info.get("imports", [])),
             }
 
-    # Resolve inheritance MRO
-    for (mod_id, cname), cinfo in class_registry.items():
-        resolved_sigs = {}
-        # Traverse bases in reverse so child overrides base
-        for base_expr in reversed(cinfo["bases"]):
-            base_key = None
-            if "." in base_expr:
-                base_mod, _, base_name = base_expr.rpartition(".")
-                base_key = (base_mod, base_name)
-            else:
-                base_key = (mod_id, base_expr)
-                if base_key not in class_registry:
-                    # Check imports in file
-                    f_info = file_data.get(cinfo["file"])
-                    if f_info:
-                        for imp in f_info["imports"]:
-                            if imp.get("name") == base_expr or imp.get("asname") == base_expr:
-                                base_key = (imp.get("module"), base_expr)
-                                break
+    def resolve_base(owner, expression):
+        owner_mod = owner["module_id"]
+        local_key = (owner_mod, expression)
+        if local_key in class_registry:
+            return local_key
+        imports = owner["imports"]
+        for imp in imports:
+            if imp.get("type") == "from" and imp.get("asname") == expression:
+                target = resolve_import_target(owner_mod, imp, module_map)
+                if target:
+                    candidate = (target.get("module_id"), imp.get("name"))
+                    if candidate in class_registry:
+                        return candidate
+        if "." in expression:
+            prefix, _, class_name = expression.rpartition(".")
+            for imp in imports:
+                if imp.get("type") != "module":
+                    continue
+                alias = imp.get("asname")
+                if alias and (prefix == alias or prefix.startswith(alias + ".")):
+                    suffix = prefix[len(alias):].lstrip(".")
+                    module_name = imp.get("module", "")
+                    candidate_module = ".".join(x for x in (module_name, suffix) if x)
+                    candidate = (candidate_module, class_name)
+                    if candidate in class_registry:
+                        return candidate
+            candidate = (prefix, class_name)
+            if candidate in class_registry:
+                return candidate
+        for imp in imports:
+            if imp.get("type") == "from" and imp.get("name") == expression:
+                target = resolve_import_target(owner_mod, imp, module_map)
+                if target:
+                    candidate = (target.get("module_id"), expression)
+                    if candidate in class_registry:
+                        return candidate
+        return None
 
-            base_cls = class_registry.get(base_key)
-            if base_cls:
-                resolved_sigs.update(base_cls["methods"])
+    base_keys = {}
+    for key, entry in class_registry.items():
+        resolved = []
+        for base in entry["bases"]:
+            candidate = resolve_base(entry, base)
+            if candidate and candidate not in resolved:
+                resolved.append(candidate)
+            elif not candidate and base not in BUILTIN_NAMES:
+                # External/dynamic bases are unknown; never infer their methods.
+                entry["has_dynamic_base"] = True
+        base_keys[key] = resolved
 
-        # Direct methods override inherited
-        resolved_sigs.update(cinfo["methods"])
-        cinfo["resolved_signatures"] = resolved_sigs
-        cinfo["resolved_methods"] = set(resolved_sigs.keys())
+    cache, active = {}, set()
+    def c3_mro(key):
+        if key in cache:
+            return cache[key]
+        if key in active:
+            class_registry[key]["has_dynamic_base"] = True
+            return [key]
+        active.add(key)
+        bases = base_keys.get(key, [])
+        sequences = [list(c3_mro(base)) for base in bases] + [list(bases)]
+        result = [key]
+        while any(sequences):
+            sequences = [seq for seq in sequences if seq]
+            candidate = next(
+                (seq[0] for seq in sequences
+                 if not any(seq[0] in other[1:] for other in sequences)),
+                None
+            )
+            if candidate is None:
+                class_registry[key]["has_dynamic_base"] = True
+                for seq in sequences:
+                    for item in seq:
+                        if item not in result:
+                            result.append(item)
+                break
+            if candidate not in result:
+                result.append(candidate)
+            for seq in sequences:
+                if seq and seq[0] == candidate:
+                    seq.pop(0)
+        active.remove(key)
+        cache[key] = result
+        return result
 
+    for key, entry in class_registry.items():
+        mro = c3_mro(key)
+        signatures = {}
+        for ancestor_key in mro:
+            ancestor = class_registry.get(ancestor_key)
+            if ancestor:
+                for name, signature in ancestor["methods"].items():
+                    signatures.setdefault(name, signature)
+        entry["mro"] = mro
+        entry["resolved_signatures"] = signatures
+        entry["resolved_methods"] = set(signatures)
+        entry["mro_complete"] = not entry["has_dynamic_base"]
     return class_registry
-
 
 def build_dependency_graph(target_dir, source_roots=None):
     """
@@ -1914,6 +2012,52 @@ execute()
         e, _, s = check_project_integrity(self.root)
         self.assertFalse(e, f"Expected src/ layout import to resolve, got: {e}")
         self.assertGreaterEqual(s['dependencies_mapped'], 1)
+
+
+    def test_inheritance_resolves_transitive_imported_base_methods(self):
+        self.write("base.py", """
+class Root:
+    def execute(self, task): pass
+class Middle(Root):
+    pass
+""")
+        self.write("child.py", """
+from base import Middle as Parent
+class Child(Parent):
+    pass
+""")
+        self.write("use.py", """
+from child import Child
+obj = Child()
+obj.execute("run")
+""")
+        errors, _, _ = check_project_integrity(self.root)
+        self.assertFalse(errors, f"Transitive inherited method should resolve: {errors}")
+
+    def test_reassignment_invalidates_module_provenance(self):
+        self.write("plugins.py", "def existing(): pass\n")
+        self.write("main.py", """
+import importlib
+module = importlib.import_module("plugins")
+module = None
+getattr(module, "not_a_real_symbol")
+""")
+        _, warnings, _ = check_project_integrity(self.root)
+        self.assertFalse(any(x.get("type") == "DYNAMIC_ATTRIBUTE" for x in warnings))
+
+    def test_reassignment_invalidates_instance_provenance(self):
+        self.write("services.py", """
+class Service:
+    def execute(self): pass
+""")
+        self.write("main.py", """
+from services import Service
+service = Service()
+service = None
+service.missing_method()
+""")
+        errors, _, _ = check_project_integrity(self.root)
+        self.assertFalse(any("missing_method" in x.get("message", "") for x in errors))
 
 
 def main():
