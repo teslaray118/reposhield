@@ -9,7 +9,7 @@ description = "AST-based Python dependency, regression, and contract sentinel fo
 readme = "README.md"
 license = "MIT"
 authors = [
-    { name = "Tesla Ray", email = "teslaray118@gmail.com" }
+    { name = "Ray Koech", email = "teslaray118@gmail.com" }
 ]
 requires-python = ">=3.8"
 classifiers = [
