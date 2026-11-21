@@ -146,7 +146,7 @@ RepoShield **never executes analyzed project code**. All scans are conducted pur
 
 ## Author & Acknowledgements
 
-Created by **Tesla Ray** (16-year-old student from Kenya).
+Created by **Ray Koech** (16-year-old student from Kenya).
 
 ---
 
