@@ -1,0 +1,44 @@
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "reposhield"
+version = "1.0.0"
+description = "AST-based Python dependency, regression, and contract sentinel for AI-assisted coding"
+readme = "README.md"
+license = "MIT"
+authors = [
+    { name = "Tesla Ray", email = "teslaray118@gmail.com" }
+]
+requires-python = ">=3.8"
+classifiers = [
+    "Development Status :: 5 - Production/Stable",
+    "Intended Audience :: Developers",
+    "Topic :: Software Development :: Quality Assurance",
+    "Topic :: Software Development :: Testing",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.8",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Operating System :: OS Independent",
+]
+keywords = ["static-analysis", "ast", "dependency-graph", "ai-safety", "regression-testing", "code-contracts"]
+dependencies = []
+
+[project.urls]
+Homepage = "https://github.com/teslaray118/reposhield"
+Repository = "https://github.com/teslaray118/reposhield.git"
+Issues = "https://github.com/teslaray118/reposhield/issues"
+Changelog = "https://github.com/teslaray118/reposhield/blob/main/CHANGELOG.md"
+
+[project.scripts]
+reposhield = "reposhield.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["reposhield*"]
+exclude = ["tests*", "test_*"]
